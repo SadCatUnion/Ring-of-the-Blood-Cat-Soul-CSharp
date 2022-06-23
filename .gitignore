@@ -70,3 +70,8 @@ crashlytics-build.properties
 # Temporary auto-generated Android Assets
 /[Aa]ssets/[Ss]treamingAssets/aa.meta
 /[Aa]ssets/[Ss]treamingAssets/aa/*
+
+# Huatuo repo and generated data
+/[Hh]ua[Tt]uo[Dd]ata/huatuo_repo
+/[Hh]ua[Tt]uo[Dd]ata/il2cpp_huatuo_repo
+/[Hh]ua[Tt]uo[Dd]ata/LocalIl2CppData
