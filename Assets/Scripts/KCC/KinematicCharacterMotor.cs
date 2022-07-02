@@ -12,12 +12,14 @@ namespace KCC
         Kinematic,
         SimulatedDynamic,
     }
+
     public enum StepHandlingMethod
     {
         None,
         Standard,
         Extra,
     }
+
     public enum MovementSweepState
     {
         Initial,
@@ -43,18 +45,22 @@ namespace KCC
         public Rigidbody attachedRigidbody;
         public Vector3 attachedRigidbodyVelocity;
     }
+
     public struct OverlapResult
     {
         public Vector3 normal;
         public Collider collider;
+
         public OverlapResult(Vector3 normal, Collider collider)
         {
             this.normal = normal;
             this.collider = collider;
         }
     }
+
     public struct CharacterGroundingReport
     {
+        // todo: 
         public bool foundAnyGround;
         public bool isStableOnGround;
         public bool snappingPrevented;
@@ -78,8 +84,10 @@ namespace KCC
             groundPoint         = Vector3.zero;
         }
     }
+
     public struct CharacterTransientGroundingReport
     {
+        // todo: 
         public bool foundAnyGround;
         public bool isStableOnGround;
         public bool snappingPrevented;
@@ -97,6 +105,7 @@ namespace KCC
             outerGroundNormal   = groundingReport.outerGroundNormal;
         }
     }
+
     public struct HitStabilityReport
     {
         public bool isStable;
@@ -117,6 +126,7 @@ namespace KCC
         public Vector3 ledgeRightDirection;
         public Vector3 ledgeFacingDirection;
     }
+
     public struct RigidbodyProjectionHit
     {
         public Rigidbody rigidbody;
@@ -167,6 +177,8 @@ namespace KCC
         [Header("Rigidbody Interaction Settings")]
         public bool interactiveRigidbodyHandling = true;
         public RigidbodyInteractionType rigidbodyInteractionType;
+        public float simulatedCharacterMass = 1f;
+        public bool preserveAttachedRigidbodyMomentum = true;
 
         [Header("Constraints Settings")]
         public bool hasPlanarConstraint = false;
@@ -186,7 +198,12 @@ namespace KCC
         [NonSerialized]
         public LayerMask collidableLayers = -1;
 
-        public Vector3 transientPosition { get; private set; }
+        public Vector3 transientPosition
+        {
+            get { return _transientPosition; }
+            private set { _transientPosition = value; }
+        }
+        private Vector3 _transientPosition;
         public Quaternion transientRotation
         {
             get { return _transientRotation; }
@@ -209,7 +226,12 @@ namespace KCC
         public Vector3 initialSimulationPosition { get; private set; }
         public Quaternion initialSimulationRotation { get; private set; }
         public Rigidbody attachedRigidbody { get; private set; }
-        public Vector3 attachedRigidbodyVelocity { get; private set; }
+        public Vector3 attachedRigidbodyVelocity
+        {
+            get { return _attachedRigidbodyVelocity; }
+            private set { _attachedRigidbodyVelocity = value; }
+        }
+        private Vector3 _attachedRigidbodyVelocity;
         public Vector3 characterTransformToCapsuleTop { get; private set; }
         public Vector3 characterTransformToCapsuleTopHemi { get; private set; }
         // public Vector3 characterTransformToCapsuleCenter { get; private set; }
@@ -239,7 +261,8 @@ namespace KCC
         private Collider[] probedColliders = new Collider[maxCollisionBudget];
         private List<Rigidbody> rigidbodiesPushedThisMove = new List<Rigidbody>(16);
         private RigidbodyProjectionHit[] rigidbodyProjectionHits = new RigidbodyProjectionHit[maxRigidbodyOverlapsCount];
-        private bool solveMovementCollision = true;
+        private Rigidbody lastAttachedRigidbody;
+        private bool solveMovementCollisions = true;
         private bool solveGrounding = true;
         private bool movePositionDirty = false;
         private Vector3 movePositionTarget = Vector3.zero;
@@ -299,7 +322,7 @@ namespace KCC
         }
         public void SetMovementCollisionSolvingActive(bool value)
         {
-            solveMovementCollision = value;
+            solveMovementCollisions = value;
         }
         public void SetGroundSolvingActive(bool value)
         {
@@ -398,11 +421,11 @@ namespace KCC
 
         public void UpdatePhase1(float deltaTime)
         {
-            if (float.IsNaN(baseVelocity.x) || float.IsNaN(baseVelocity.x) || float.IsNaN(baseVelocity.z))
+            if (float.IsNaN(baseVelocity.x) || float.IsNaN(baseVelocity.y) || float.IsNaN(baseVelocity.z))
             {
                 baseVelocity = Vector3.zero;
             }
-            if (float.IsNaN(attachedRigidbodyVelocity.x) || float.IsNaN(attachedRigidbodyVelocity.x) || float.IsNaN(attachedRigidbodyVelocity.z))
+            if (float.IsNaN(attachedRigidbodyVelocity.x) || float.IsNaN(attachedRigidbodyVelocity.y) || float.IsNaN(attachedRigidbodyVelocity.z))
             {
                 attachedRigidbodyVelocity = Vector3.zero;
             }
@@ -427,7 +450,7 @@ namespace KCC
 
             if (movePositionDirty)
             {
-                if (solveMovementCollision)
+                if (solveMovementCollisions)
                 {
                     Vector3 tmpVelocity = GetVelocityFromMovement(movePositionTarget - transientPosition, deltaTime);
                     if (InternalCharacterMove(ref tmpVelocity, deltaTime))
@@ -449,18 +472,49 @@ namespace KCC
             groundingStatus = new CharacterGroundingReport();
             groundingStatus.groundNormal = characterUp;
 
-            if (solveMovementCollision)
+            if (solveMovementCollisions)
             {
-                Vector3 resolutionDirection = Vector3.up;
-                float resolutionDistance = 0f;
-                int iterationsMade = 0;
-                bool overlapSolved = false;
+                var resolutionDirection = Vector3.up;
+                var resolutionDistance = 0f;
+                var iterationsMade = 0;
+                var overlapSolved = false;
                 while (iterationsMade < maxDecollisionIterations && !overlapSolved)
                 {
-                    int nbOverlaps = CharacterCollisionOverlap(transientPosition, transientRotation, probedColliders);
+                    int nbOverlaps = CharacterCollisionsOverlap(transientPosition, transientRotation, probedColliders);
                     if (nbOverlaps > 0)
                     {
+                        for (int i = 0; i < nbOverlaps; i++)
+                        {
+                            if (GetInteractiveRigidbody(probedColliders[i]) == null)
+                            {
+                                if (Physics.ComputePenetration(
+                                    capsuleCollider,
+                                    transientPosition,
+                                    transientRotation,
+                                    probedColliders[i],
+                                    probedColliders[i].transform.position,
+                                    probedColliders[i].transform.rotation,
+                                    out resolutionDirection,
+                                    out resolutionDistance))
+                                {
+                                    // todo: remove mockReport
+                                    var mockReport = new HitStabilityReport();
+                                    mockReport.isStable = IsStableOnNormal(resolutionDirection);
+                                    resolutionDirection = GetObstructionNormal(resolutionDirection, mockReport.isStable);
 
+                                    var resolutionMovement = resolutionDirection * (resolutionDistance + collisionOffset);
+                                    transientPosition += resolutionMovement;
+
+                                    if (overlapsCount < overlaps.Length)
+                                    {
+                                        overlaps[overlapsCount] = new OverlapResult(resolutionDirection, probedColliders[i]);
+                                        overlapsCount++;
+                                    }
+
+                                    break;
+                                }
+                            }
+                        }
                     }
                     else
                     {
@@ -474,15 +528,36 @@ namespace KCC
             {
                 if (MustUnground())
                 {
-
+                    transientPosition += characterUp * (minGroundProbingDistance * 1.5f);
                 }
                 else
                 {
+                    var selectedGroundProbingDistance = minGroundProbingDistance;
+                    if (!lastGroundingStatus.snappingPrevented && (lastGroundingStatus.isStableOnGround || lastMovementIterationFoundAnyGround))
+                    {
+                        if (stepHandling != StepHandlingMethod.None)
+                        {
+                            selectedGroundProbingDistance = Mathf.Max(capsuleRadius, maxStepHeight);
+                        }
+                        else
+                        {
+                            selectedGroundProbingDistance = capsuleRadius;
+                        }
+                        selectedGroundProbingDistance += groundDetectionExtraDistance;
+                    }
 
+                    ProbeGround(ref _transientPosition, transientRotation, selectedGroundProbingDistance, ref groundingStatus);
+
+                    if (!lastGroundingStatus.isStableOnGround && groundingStatus.isStableOnGround)
+                    {
+                        baseVelocity = Vector3.ProjectOnPlane(baseVelocity, characterUp);
+                        baseVelocity = GetDirectionTangentToSurface(baseVelocity, groundingStatus.groundNormal) * baseVelocity.magnitude;
+                    }
                 }
-                
             }
+
             lastMovementIterationFoundAnyGround = false;
+
             if (mustUngroundTimeCounter > 0f)
             {
                 mustUngroundTimeCounter -= deltaTime;
@@ -496,13 +571,77 @@ namespace KCC
 
             if (interactiveRigidbodyHandling)
             {
+                lastAttachedRigidbody = attachedRigidbody;
+                if (attachedRigidbodyOverride)
+                {
+                    attachedRigidbody = attachedRigidbodyOverride;
+                }
+                else
+                {
+                    if (groundingStatus.isStableOnGround && groundingStatus.groundCollider.attachedRigidbody)
+                    {
+                        var interactiveRigidbody = GetInteractiveRigidbody(groundingStatus.groundCollider);
+                        if (interactiveRigidbody)
+                        {
+                            attachedRigidbody = interactiveRigidbody;
+                        }
+                    }
+                    else
+                    {
+                        attachedRigidbody = null;
+                    }
+                }
 
+                var tmpVelocityFromCurrentAttachedRigidbody = Vector3.zero;
+                var tmpAngularVelocityFromCurrentAttachedRigidbody = Vector3.zero;
+                if (attachedRigidbody)
+                {
+                    GetVelocityFromRigidbodyMovement(attachedRigidbody, transientPosition, deltaTime, out tmpVelocityFromCurrentAttachedRigidbody, out tmpAngularVelocityFromCurrentAttachedRigidbody);
+                }
+
+                if (preserveAttachedRigidbodyMomentum && lastAttachedRigidbody && attachedRigidbody != lastAttachedRigidbody)
+                {
+                    baseVelocity += attachedRigidbodyVelocity;
+                    baseVelocity -= tmpVelocityFromCurrentAttachedRigidbody;
+                }
+
+                attachedRigidbodyVelocity = Vector3.zero;
+                if (attachedRigidbody)
+                {
+                    attachedRigidbodyVelocity = tmpVelocityFromCurrentAttachedRigidbody;
+                    var newForward = Vector3.ProjectOnPlane(Quaternion.Euler(Mathf.Rad2Deg * tmpAngularVelocityFromCurrentAttachedRigidbody * deltaTime) * characterForward, characterUp).normalized;
+                    transientRotation = Quaternion.LookRotation(newForward, characterUp);
+                }
+
+                if (groundingStatus.groundCollider &&
+                    groundingStatus.groundCollider.attachedRigidbody &&
+                    groundingStatus.groundCollider.attachedRigidbody == attachedRigidbody &&
+                    attachedRigidbody &&
+                    !lastAttachedRigidbody)
+                {
+                    baseVelocity -= Vector3.ProjectOnPlane(attachedRigidbodyVelocity, characterUp);
+                }
+
+                if (attachedRigidbodyVelocity.sqrMagnitude > 0f)
+                {
+                    isMovingFromAttachedRigidbody = true;
+
+                    if (solveMovementCollisions)
+                    {
+                        InternalCharacterMove(ref _attachedRigidbodyVelocity, deltaTime);
+                    }
+                    else
+                    {
+                        transientPosition += attachedRigidbodyVelocity * deltaTime;
+                    }
+
+                    isMovingFromAttachedRigidbody = false;
+                }
             }
         }
         public void UpdatePhase2(float deltaTime)
         {
             characterController.UpdateRotation(ref _transientRotation, deltaTime);
-            //transientRotation = _transientRotation;
 
             if (moveRotationDirty)
             {
@@ -510,9 +649,92 @@ namespace KCC
                 moveRotationDirty = false;
             }
 
-            if (solveMovementCollision && interactiveRigidbodyHandling)
+            if (solveMovementCollisions && interactiveRigidbodyHandling)
             {
+                if (interactiveRigidbodyHandling)
+                {
+                    if (attachedRigidbody)
+                    {
+                        var upwardsOffset = capsuleCollider.radius;
+                        RaycastHit closestHit;
+                        if (CharacterGroundSweep(
+                            transientPosition + characterUp * upwardsOffset,
+                            transientRotation,
+                            -characterUp,
+                            upwardsOffset,
+                            out closestHit))
+                        {
+                            if (closestHit.collider.attachedRigidbody == attachedRigidbody && IsStableOnNormal(closestHit.normal))
+                            {
+                                var distanceMovedUp = upwardsOffset - closestHit.distance;
+                                transientPosition += characterUp * (distanceMovedUp + collisionOffset);
+                            }
+                        }
+                    }
 
+                    var resolutionDirection = Vector3.up;
+                    var resolutionDistance = 0f;
+                    var iterationsMade = 0;
+                    var overlapSolved = false;
+                    while (iterationsMade < maxDecollisionIterations && !overlapSolved)
+                    {
+                        int nbOverlaps = CharacterCollisionsOverlap(transientPosition, transientRotation, probedColliders);
+                        if (nbOverlaps > 0)
+                        {
+                            for (int i = 0; i < nbOverlaps; i++)
+                            {
+                                if (Physics.ComputePenetration(
+                                    capsuleCollider,
+                                    transientPosition,
+                                    transientRotation,
+                                    probedColliders[i],
+                                    probedColliders[i].transform.position,
+                                    probedColliders[i].transform.rotation,
+                                    out resolutionDirection,
+                                    out resolutionDistance))
+                                {
+                                    // todo: remove mockReport
+                                    var mockReport = new HitStabilityReport();
+                                    mockReport.isStable = IsStableOnNormal(resolutionDirection);
+                                    resolutionDirection = GetObstructionNormal(resolutionDirection, mockReport.isStable);
+
+                                    var resolutionMovement = resolutionDirection * (resolutionDistance + collisionOffset);
+                                    transientPosition += resolutionMovement;
+
+                                    var probedRigidbody = GetInteractiveRigidbody(probedColliders[i]);
+                                    if (probedRigidbody)
+                                    {
+                                        var tmpReport = new HitStabilityReport();
+                                        tmpReport.isStable = IsStableOnNormal(resolutionDirection);
+                                        if (tmpReport.isStable)
+                                        {
+                                            lastMovementIterationFoundAnyGround = true;
+                                        }
+                                        if (probedRigidbody != attachedRigidbody)
+                                        {
+                                            //var characterCenter = transientPosition + transientRotation * capsuleCollider.center;
+                                            var estimatedCollisionPoint = transientPosition;
+                                            StoreRigidbodyHit(probedRigidbody, velocity, estimatedCollisionPoint, resolutionDirection, tmpReport);
+                                        }
+                                    }
+
+                                    if (overlapsCount < overlaps.Length)
+                                    {
+                                        overlaps[overlapsCount] = new OverlapResult(resolutionDirection, probedColliders[i]);
+                                        overlapsCount++;
+                                    }
+
+                                    break;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            overlapSolved = true;
+                        }
+                        iterationsMade++;
+                    }
+                }
             }
 
             characterController.UpdateVelocity(ref baseVelocity, deltaTime);
@@ -524,7 +746,7 @@ namespace KCC
 
             if (baseVelocity.sqrMagnitude > 0f)
             {
-                if (solveMovementCollision)
+                if (solveMovementCollisions)
                 {
                     InternalCharacterMove(ref baseVelocity, deltaTime);
                 }
